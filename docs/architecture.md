@@ -155,11 +155,20 @@ loaded twice by mistake) can never collide on a variable name.
   another's identity by accident. It is not a security boundary against
   genuinely hostile code in the same page, only a mistake-catcher.
 - Once claimed, every `stateEngine.createVariable`/`createPreset`/etc.
-  call your extension makes with `extensionId` set to your
-  `EXTENSION_ID` is automatically scoped to your namespace - you never
-  pass the namespace string itself to most of those calls again, only to
-  ones that explicitly address a preset or variable by
-  `{ namespace, ... }`.
+  call names the namespace it targets (`def.namespace`, or a
+  `{ namespace, presetName, ... }` ref), and every WRITE is refused
+  unless that namespace is the one your `extensionId` owns.
+- **Reads are wider than writes.** Calls that only read or display state
+  - `listAllVariables`, `getVariableValue(s)`, `getVariableImage`,
+  `listRoles`/`resolveRoles`, the character reads, the datetime
+  formatters - accept any registered extension and span EVERY
+  namespace, including the user's own `se` one, and return copies. So
+  do a few chat-level actions that change no definition:
+  `activatePreset`/`deactivatePreset`, `assignRole`, `requestRoles`. In
+  short: anything that edits a definition is owner-only; anything that
+  shows or binds state is open to registered callers - which is why
+  every extension should claim a namespace even if it never creates a
+  variable.
 
 ## Registration
 

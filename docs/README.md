@@ -5,8 +5,9 @@
 A blank SillyTavern extension that installs and runs on its own, does
 nothing visible, and exists purely as a starting point for a *new*
 extension that talks to the [State Engine](https://github.com/StygianTechnica/SillyTavern-StateEngine)
-API - the API that manages presets, variables, calendars, events, and
-independent presets for the State Engine extension.
+API - the API that manages presets, variables and their values,
+calendars, events, independent presets, roles, characters, images, and
+notifications for the State Engine extension.
 
 On load it does exactly four things:
 1. Checks that the State Engine extension is actually installed,
@@ -89,8 +90,9 @@ every load; you don't need to call `claimNamespace()` anywhere else.
 Once the namespace is renamed and the extension loads cleanly on its
 own (console message, no errors), you're ready to add real behavior.
 [how-to-extend.md](how-to-extend.md) walks through adding presets,
-variables, UI, independent presets, events, Scenario Builder
-integration, and capability dependencies - each as its own, additive
+variables, reading and writing values, UI, independent presets, events,
+roles, characters, Scenario Builder integration, and capability
+dependencies - each as its own, additive
 step on top of this scaffold. [architecture.md](architecture.md)
 explains the lifecycle and API concepts this template's init sequence
 (dependency check, then the three State Engine calls) is built on, if
