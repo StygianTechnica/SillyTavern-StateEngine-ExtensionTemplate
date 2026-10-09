@@ -49,12 +49,21 @@ worked. `activatePreset` seeds default values, recalculates any
 calculated variables, and refreshes macros for you; nothing further to
 call afterward.
 
+`activatePreset`/`deactivatePreset` are the one exception to namespace
+ownership: binding a preset to a chat changes none of its definitions,
+so any registered extension may switch on ANY namespace's preset - e.g.
+one of the user's own `se` presets that your UI displays. Everything
+that edits a preset (`createPreset`, `updatePreset`, `deletePreset`)
+stays owner-only.
+
 ## Adding variables
 
-Variables live inside a preset. Nine types are supported - string,
-number, boolean, enum, array, datetime, image, imageList, imageMap, and
-calculated - see the State Engine's own "Variable Types" reference for
-the full field shape of each. A minimal prompted string variable:
+Variables live inside a preset. Eleven types are supported - string,
+number, boolean, enum, array, datetime, image, imageList, imageMap,
+character, and calculated - see the State Engine's own "Variable Types"
+reference for the full field shape of each. (A `character` variable
+holds a character id - see "Working with characters", below - takes no
+default, and cannot be incremented.) A minimal prompted string variable:
 
 ```js
 stateEngine.createVariable(EXTENSION_ID, ensureInstanceId(), {
@@ -69,11 +78,64 @@ stateEngine.createVariable(EXTENSION_ID, ensureInstanceId(), {
 ```
 
 The model then writes to it during the normal per-message prompted
-update (or your own independent preset's update - see below) - never
-call `createVariable`/`updateVariable` with a `value` field to set it
-directly; a variable's value flows through chat state
-(`stateEngine.getVariable`/the `{{getvar::myExtension__mood}}` macro),
-never through its definition.
+update (or your own independent preset's update - see below). A
+variable's value never goes through its definition: `createVariable`/
+`updateVariable` reject a `value` field outright. To read or set a value
+yourself, use the Variable Value API - see "Reading and writing variable
+values", directly below.
+
+An incrementing variable can take its step from another variable
+instead of a fixed number: `increment: { delta: 1, deltaVariable:
+'myExtension__speed' }` - the fixed `delta` is the fallback if the named
+variable is missing or unusable, and a variable can never name itself.
+
+## Reading and writing variable values
+
+`variable-api.js` (above) only deals in *definitions*. The current
+VALUE of a variable in a given chat goes through the Variable Value
+API:
+
+```js
+const chatId = SillyTavern.getContext().chatId;
+
+// Every preset in every namespace, each with its variables' display
+// fields (label, type, min/max, enumValues, calendar...). Pass chatId to
+// also get `active` per preset.
+const catalog = stateEngine.listAllVariables(EXTENSION_ID, ensureInstanceId(), chatId);
+
+// One value, or several in one store read - fully qualified names.
+// -> { value, def } | undefined (undefined = the chat holds no value,
+//    e.g. its preset isn't active there)
+const mood = stateEngine.getVariableValue(EXTENSION_ID, ensureInstanceId(), chatId, 'myExtension__mood');
+const many = stateEngine.getVariableValues(EXTENSION_ID, ensureInstanceId(), chatId, ['se__hp', 'se__location']);
+
+// The image an image/imageList/imageMap variable is currently showing,
+// already checked as safe for <img src> - or null.
+const src = stateEngine.getVariableImage(EXTENSION_ID, ensureInstanceId(), chatId, 'myExtension__portrait');
+
+// Write a value - OWNER-ONLY (your own namespace), never a calculated
+// variable. Returns true/false.
+stateEngine.setVariableValue(EXTENSION_ID, ensureInstanceId(), chatId,
+    { namespace: NAMESPACE, presetName: 'Main', variableName: 'mood' }, 'tense');
+```
+
+Reads are open to any registered extension and span every namespace (a
+display extension has to be able to show the user's own `se`
+variables); they always return copies. Writes stay owner-only.
+
+**Following changes.** There is no subscribe call - every value write
+emits `state_engine_variables_changed` on SillyTavern's own event bus,
+coalesced to one event per chat per engine pass. The payload is just
+the `chatId` (`null` = possibly every chat); re-read whatever you care
+about:
+
+```js
+SillyTavern.getContext().eventSource.on('state_engine_variables_changed', (chatId) => {
+    if (chatId === null || chatId === SillyTavern.getContext().chatId) refreshMyUi();
+});
+```
+
+Role changes (below) emit the same event.
 
 ## Adding UI
 
@@ -87,13 +149,34 @@ the same way any SillyTavern extension does:
    into the extensions drawer) or via a modal/panel your extension opens
    itself.
 2. Wire it up from `src/extension.js` (or a new module you import from
-   there) - call `stateEngine.getVariable`/`listVariables`/`getVar`-style
-   reads to populate it, and your own `updateVariable`/whatever write
-   calls in response to user interaction.
-3. Keep UI code out of `src/api/*.js` - those three files exist purely
-   as identity-checked API wrappers, matching this template's own
-   structure. A `src/ui/` folder, added when you need it, is a natural
-   place to grow into.
+   there) - populate it with the Variable Value API reads above, refresh
+   it on `state_engine_variables_changed`, and call `setVariableValue`
+   (your own variables) in response to user interaction.
+3. Keep UI code out of `src/api/*.js` - those files exist purely as
+   identity-checked API wrappers, one call each, matching this
+   template's own structure. A `src/ui/` folder, added when you need it,
+   is a natural place to grow into.
+
+A few calls exist specifically for displays:
+
+- **Dates and times.** `formatDateTime(extensionId, instanceId,
+  calendarId, scalarTime, options)` and `formatDateTimePartial(...,
+  fields)` render a datetime variable's value as text in its own
+  calendar; `getDateTimeParts(extensionId, instanceId, calendarId,
+  scalarTime)` returns the structured pieces (date fields, weekday,
+  `time: { hour, minute, second, fraction }`, the calendar's clock
+  sizes) for things you draw rather than print, like an analog clock.
+- **Storing images.** `await importImageFile(extensionId, instanceId,
+  file, { folder })` stores an uploaded `File` exactly the way State
+  Engine stores image-variable files (format sniffed from the bytes, no
+  SVG, 20 MB max) into `user/images/<folder>/`, and returns that
+  relative path. Unlike most calls it THROWS on failure, with a message
+  meant to be shown to the user.
+- **Notifications.** `notify(extensionId, instanceId, { message,
+  severity?, id?, callbackId? })` posts to State Engine's own
+  notification panel (re-using an `id` replaces that notification rather
+  than stacking duplicates); `clearNotification(extensionId, instanceId,
+  id)` removes it.
 
 ## Adding independent presets
 
@@ -150,6 +233,65 @@ Only DISPATCHING is namespace-restricted to your extension; listening is
 open to any code, since that's how other extensions would react to your
 events in the first place.
 
+## Binding to variables by role
+
+If your extension needs "whatever variable holds the scene title" rather
+than one specific variable name, don't hard-code `se__scene_title` -
+define a ROLE. A role is a global, namespaced semantic tag
+(`myExtension__scene.title`); each chat assigns one of its own variables
+to it, so the same extension works across chats and presets that name
+things differently.
+
+```js
+// Keep your namespace's roles in step with what you need (roles left out
+// are deleted; roles that stay keep their assignments). Owner-only.
+stateEngine.setNamespaceRoles(EXTENSION_ID, ensureInstanceId(), [
+    { publicName: 'scene.title', type: 'text', label: 'Scene title' },
+]);
+
+// Tell State Engine this chat (or every chat: omit chatId) needs it, so
+// the user is shown what's missing. Any namespace's role ids may be listed.
+stateEngine.requestRoles(EXTENSION_ID, ensureInstanceId(), {
+    key: 'main', label: 'My Extension', roles: [`${NAMESPACE}__scene.title`],
+});
+
+// Resolve to the variable actually assigned in this chat.
+const { roles, missing, allAssigned } = stateEngine.resolveRoles(
+    EXTENSION_ID, ensureInstanceId(), chatId, [`${NAMESPACE}__scene.title`]);
+```
+
+Role types are `text`, `number`, `boolean`, `date`, `image`, `list` and
+`any` (`getRoleTypes()`). `assignRole(..., chatId, id, variableName)`
+assigns (or, with `null`, clears) a chat's variable - only variables of
+a preset active in that chat, of a fitting type
+(`getRoleCandidates(...)` lists them). Defining/updating/deleting roles
+is owner-only; reading, assigning and requesting are open to any
+registered extension, since assignments belong to the chat.
+
+## Working with characters
+
+State Engine tracks characters in two layers: SETTINGS (global
+containers of canonical, confirmed characters, with variants) and each
+CHAT (which setting it uses, who's present, and characters the model
+has detected but nobody has reviewed yet - "unconfirmed"). Confirming a
+character moves it into the setting. A `character` variable holds a
+character id.
+
+```js
+const setting = await stateEngine.ensureChatCharacterSetting(EXTENSION_ID, ensureInstanceId(), chatId); // asks the user if the chat has none
+const cast = stateEngine.listCharacters(EXTENSION_ID, ensureInstanceId(), chatId);
+const who = stateEngine.getCharacterByAlias(EXTENSION_ID, ensureInstanceId(), chatId, 'Mira');
+// who.runtime = { present, thought, mood, intent, custom, images } - this chat's current state
+```
+
+The full surface (create/update/merge/confirm/resolve characters,
+variants, per-setting runtime fields, `setCharacterRuntimeValue`) is in
+the header comment of State Engine's `src/api/character-api.js`. A UI
+extension that provides a Character Manager registers its opener with
+`registerCharacterManager(extensionId, instanceId, opener)`; anyone can
+then open it with `openCharacterManager(...)` (check
+`hasCharacterManager()` first).
+
 ## Integrating with Scenario Builder
 
 There is no Scenario-Builder-specific API - it's expected to be just
@@ -166,7 +308,10 @@ are the same ones that make any extension discoverable:
    `"scenario.characterState"`, so Scenario Builder (or anything else)
    can find you via `stateEngine.getExtensionsProviding(...)` rather
    than needing to know your `extensionId` in advance.
-3. If Scenario Builder later publishes its own capability name to
+3. Define roles for the things you expose (see "Binding to variables by
+   role", above), so a consumer can bind to their meaning rather than
+   your variable names.
+4. If Scenario Builder later publishes its own capability name to
    depend on, declare it in your own `dependsOn` list - see "Declaring
    dependencies", directly below.
 
